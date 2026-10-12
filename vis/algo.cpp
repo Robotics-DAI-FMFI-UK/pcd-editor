@@ -101,42 +101,13 @@ bool Vis_FloorToGroundAlignment(const pcl::PointCloud<pcl::PointXYZI> &cloud, Ei
 	return true;
 }
 
-// Original behavior, unchanged from the caller's point of view: detects
-// the floor plane in `cloud` and applies the leveling transform in place.
-// Leaves `cloud` untouched if no plane is found.
-void Vis_AlignFloorToGround(pcl::PointCloud<pcl::PointXYZI> &cloud) {
-#if VIS_FLOOR_DEBUG_PRINT
-	bool haveSample = !cloud.empty();
-	pcl::PointXYZI beforeSample;
-	if (haveSample) beforeSample = cloud.points[0];
-#endif
-
-	Eigen::Affine3f transform;
-	if (!Vis_FloorToGroundAlignment(cloud, transform)) return; // reason, if any, already printed above
-
-	transformPointCloud(cloud, cloud, transform);
-
-#if VIS_FLOOR_DEBUG_PRINT
-	if (haveSample) {
-		const pcl::PointXYZI &afterSample = cloud.points[0];
-		std::cerr << "Vis_AlignFloorToGround: sample point[0] before = (" << beforeSample.x << ", " << beforeSample.y << ", " << beforeSample.z
-			<< "), after = (" << afterSample.x << ", " << afterSample.y << ", " << afterSample.z << ")" << std::endl;
-	}
-#endif
-}
-
-
-// ============================================================
-// Vis_RayPlaneIntersect - configurable constants
-// ============================================================
-#define VIS_RAY_PLANE_EPSILON 1e-6f   // below this, ray is treated as parallel to plane
 
 bool Vis_RayPlaneIntersect(const glm::vec3 &rayOrigin, const glm::vec3 &rayDir, const glm::vec3 &planePoint, const glm::vec3 &planeNormal, glm::vec3 &outIntersection) {
 	glm::vec3 n = glm::normalize(planeNormal);
 	float denom = glm::dot(n, rayDir);
 	if (!denom) return false;
 
-	if (fabsf(denom) < VIS_RAY_PLANE_EPSILON) {
+	if (fabsf(denom) < 1e-6f) {
 		// ray direction is parallel (or nearly parallel) to the plane
 		return false;
 	}
@@ -181,4 +152,161 @@ void Vis_GetMouseRay(glm::vec3 &outRayOrigin, glm::vec3 &outRayDir) {
 	double mx, my;
 	glfwGetCursorPos(VIS_GLFW_WINDOW, &mx, &my);
 	Vis_ScreenPointToRay((float)mx, (float)my, outRayOrigin, outRayDir);
+}
+
+
+
+#define VIS_ZONE_Y_SCALE_SPEED             4.0f
+#define VIS_ZONE_XZ_SCALE_SPEED            1.0f
+#define VIS_ZONE_MAX_SIZE                  1000.0f
+
+
+
+Vis_CuboidCorners Vis_CuboidCenter::toCorners() const {
+	return toCorners(*this);
+}
+
+Vis_CuboidCorners Vis_CuboidCenter::toCorners(const Vis_CuboidCenter& zone) {
+	Vis_CuboidCorners cub{};
+	cub.p0 = zone.center - zone.halfExtents;
+	cub.p1 = zone.center + zone.halfExtents;
+	cub.rot = zone.rot;
+	return cub;
+}
+
+Vis_CuboidCenter Vis_CuboidCorners::toCenter() const {
+	return toCenter(*this);
+}
+
+Vis_CuboidCenter Vis_CuboidCorners::toCenter(const Vis_CuboidCorners& cub) {
+	Vis_CuboidCenter zone{};
+	glm::vec3 extents = glm::abs(cub.p1 - cub.p0);
+	zone.halfExtents = extents * 0.5f;
+	zone.center = (cub.p0 + cub.p1) * 0.5f;
+	zone.rot = cub.rot;
+	return zone;
+}
+
+glm::mat4 Vis_Zone_GetTransform(const Vis_CuboidCenter& zone) {
+	const glm::mat4 T = glm::translate(glm::mat4(1.0f), zone.center);
+	const glm::mat4 R = glm::mat4_cast(glm::normalize(zone.rot));
+	return T * R;
+}
+
+
+glm::vec3 Vis_Zone_LocalToWorld(const Vis_CuboidCenter& zone, const glm::vec3& local) {
+	return glm::vec3(Vis_Zone_GetTransform(zone) * glm::vec4(local, 1.0f));
+}
+
+glm::vec3 Vis_Zone_WorldToLocal(const Vis_CuboidCenter& zone, const glm::vec3& world) {
+	return glm::vec3(glm::inverse(Vis_Zone_GetTransform(zone)) * glm::vec4(world, 1.0f));
+}
+
+// assuming an attcahment point at localRayAttach, apply parametrized force
+// to move localRayAttach close to target
+void Vis_Zone_ApplyDrag(Vis_CuboidCenter& zone, const glm::vec3& localAttach, const glm::vec3& target) {
+	const glm::vec3 worldAttach = Vis_Zone_LocalToWorld(zone, localAttach);
+	const glm::vec3 oldCenter = zone.center;
+	const glm::vec3 up = VIS_SCENE_WORLD_UP_NORM;
+
+	// spin when grabbed outside the footprint, move when grabbed inside
+	const bool spin = fabsf(localAttach.x) > fabsf(zone.halfExtents.x) ||
+		fabsf(localAttach.z) > fabsf(zone.halfExtents.z);
+
+	if (spin) {
+		const glm::vec3 toAttach = worldAttach - oldCenter;
+		const glm::vec3 toTarget = target - oldCenter;
+
+		// flatten both vectors onto the plane perpendicular to up
+		const glm::vec3 a = toAttach - up * glm::dot(toAttach, up);
+		const glm::vec3 b = toTarget - up * glm::dot(toTarget, up);
+
+		// signed angle from a to b about up (same as the old atan2 on x/z)
+		const float angleError = atan2f(glm::dot(up, glm::cross(a, b)), glm::dot(a, b));
+
+		// world-space spin about up, pivoting on the center
+		zone.rot = glm::normalize(glm::angleAxis(angleError, up) * zone.rot);
+	}
+	else {
+		zone.center += target - worldAttach;
+	}
+}
+
+// assuming an attcahment point at localRayAttach, apply parametrized scaling
+// to zone - local X or Z dimension(whichever is more prominent, only one of them)
+void Vis_Zone_ApplyXZScale(Vis_CuboidCenter& zone, const glm::vec3& localRayAttach, const glm::vec3& target, const glm::vec3& initialRayAttach) {
+	glm::vec3 worldAttach = Vis_Zone_LocalToWorld(zone, localRayAttach);
+
+	glm::vec3 toAttachLocal = Vis_Zone_WorldToLocal(zone, worldAttach - zone.center);
+	glm::vec3 toTargetLocal = Vis_Zone_WorldToLocal(zone, target - zone.center);
+	glm::vec3 delta = toTargetLocal - toAttachLocal;
+
+	// flip so "outward" (away from center, on whichever face was grabbed) always grows the zone
+	delta.x *= (initialRayAttach.x < 0.0f) ? -1.0f : 1.0f;
+	delta.z *= (initialRayAttach.z < 0.0f) ? -1.0f : 1.0f;
+
+	// scale only in the prominent direction
+	float xAxisToggle = (float)(abs(delta.x) > abs(delta.z));
+	float zAxisToggle = 1.0f - xAxisToggle;
+
+	zone.halfExtents.x += delta.x * logf(zone.halfExtents.x + 1.01f) * xAxisToggle * VIS_ZONE_XZ_SCALE_SPEED;
+	zone.halfExtents.z += delta.z * logf(zone.halfExtents.z + 1.01f) * zAxisToggle * VIS_ZONE_XZ_SCALE_SPEED;
+
+	zone.halfExtents.x = std::clamp(zone.halfExtents.x, 0.0f, VIS_ZONE_MAX_SIZE);
+	zone.halfExtents.z = std::clamp(zone.halfExtents.z, 0.0f, VIS_ZONE_MAX_SIZE);
+}
+
+
+// ---- Vis_RayCuboidIntersect configuration ----------------------------------
+// 1: if the ray origin is inside the cuboid, report a hit at the origin (t = 0).
+// 0: report a miss when the origin is inside (only entry hits count).
+#ifndef VIS_RAYCUBOID_HIT_FROM_INSIDE
+#define VIS_RAYCUBOID_HIT_FROM_INSIDE 1
+#endif
+// ----------------------------------------------------------------------------
+
+bool Vis_RayCuboidIntersect(const glm::vec3& rayOrigin, const glm::vec3& rayDir,
+	const Vis_CuboidCenter& cuboid, glm::vec3& outIntersection) {
+	const glm::mat4 model = Vis_Zone_GetTransform(cuboid);
+	if (glm::abs(glm::determinant(model)) < 1e-12f) return false;
+	const glm::mat4 inv = glm::inverse(model);
+
+	// Local-space bounds
+	const glm::vec3 hi = cuboid.halfExtents;
+	const glm::vec3 lo = -hi;
+
+	// Ray in local space. Direction is NOT normalized, so t is the same in both spaces.
+	const glm::vec3 o = glm::vec3(inv * glm::vec4(rayOrigin, 1.0f));
+	const glm::vec3 d = glm::vec3(inv * glm::vec4(rayDir, 0.0f));
+
+	float tNear = -INFINITY;
+	float tFar = INFINITY;
+
+	for (int axis = 0; axis < 3; ++axis) {
+		if (glm::abs(d[axis]) < 1e-8f) {
+			// Parallel to this slab: must already lie between its planes.
+			if (o[axis] < lo[axis] || o[axis] > hi[axis]) return false;
+			continue;
+		}
+		float t0 = (lo[axis] - o[axis]) / d[axis];
+		float t1 = (hi[axis] - o[axis]) / d[axis];
+		if (t0 > t1) { const float tmp = t0; t0 = t1; t1 = tmp; }
+		if (t0 > tNear) tNear = t0;
+		if (t1 < tFar)  tFar = t1;
+		if (tNear > tFar) return false;
+	}
+
+	if (tFar < 0.0f) return false; // cuboid entirely behind the ray
+
+	float tHit = tNear;
+	if (tNear < 0.0f) {
+#if VIS_RAYCUBOID_HIT_FROM_INSIDE
+		tHit = 0.0f;
+#else
+		return false;
+#endif
+	}
+
+	outIntersection = rayOrigin + rayDir * tHit;
+	return true;
 }

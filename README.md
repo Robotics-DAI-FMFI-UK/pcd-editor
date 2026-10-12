@@ -31,6 +31,11 @@ This project depends on OpenGL v2.x, GLFW and ImGUI.
 	```
 	***note:** in VS Code on Linux, for `zenity` to work, the environment variable `GTK_PATH` must be unset (VSCode sets it and it breaks `zenity`)*
 
+5. Download `stduuid` into project folder
+	```bash
+	git clone --depth=1 https://github.com/mariusbancila/stduuid external/stduuid
+	```
+
 5. Add `i9.pcd` (downloaded from [unitree wiki](https://dai.fmph.uniba.sk/projects/unitree/i9.pcd)) to the project root
 	```bash
 	wget https://dai.fmph.uniba.sk/projects/unitree/i9.pcd

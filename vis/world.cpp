@@ -124,6 +124,8 @@ void Vis_UpdateInput() {
 		glm::vec3 forward; Vis_Camera_GetBasis(&forward, nullptr, nullptr);
 		glm::vec3 eye_before = Vis_Camera_GetEye(VIS_CAMERA.pivot, VIS_CAMERA.angles, VIS_CAMERA.pivot_distance);
 
+		auto prev_state = VIS_CAMERA;
+
 		float forward_up = glm::dot(forward, VIS_SCENE_WORLD_UP_NORM);
 		if (fabsf(forward_up) > 1e-4f) {
 			float eye_up = glm::dot(eye_before, VIS_SCENE_WORLD_UP_NORM);
@@ -136,6 +138,11 @@ void Vis_UpdateInput() {
 			VIS_CAMERA.angles.yaw += delta.x * VIS_CAMERA_ORBIT_SPEED_DEG;
 			VIS_CAMERA.angles.pitch -= delta.y * VIS_CAMERA_ORBIT_SPEED_DEG;
 			VIS_CAMERA.angles.pitch = std::clamp(VIS_CAMERA.angles.pitch, VIS_CAMERA_PITCH_MIN, VIS_CAMERA_PITCH_MAX);
+
+			// re-check above condition, if it's invalid, reset state (we don't want the cam getting stuck)
+			glm::vec3 new_forward; Vis_Camera_GetBasis(&new_forward, nullptr, nullptr);
+			if (fabsf(glm::dot(new_forward, VIS_SCENE_WORLD_UP_NORM)) <= 1e-4f)
+				VIS_CAMERA = prev_state;
 		}
 	}
 

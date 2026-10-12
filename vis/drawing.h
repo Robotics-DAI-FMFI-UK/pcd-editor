@@ -1,6 +1,8 @@
 #pragma once
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 // =========================================================================
 // CUSTOMIZATION MACROS
@@ -37,5 +39,7 @@ void Vis_DrawFloor();
 void Vis_DrawGrid();
 
 void Vis_DrawGizmo(glm::vec3 pos = glm::vec3());
+
+void Vis_DrawWireCube(const glm::vec3& p0, const glm::vec3& p1, const glm::quat& rot);
 
 void Vis_DrawWireCube(const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& anglesDeg = glm::vec3(0.0f));

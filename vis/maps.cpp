@@ -9,6 +9,8 @@
 #include <algorithm>
 
 #include <pcl/common/common.h>
+#include <pcl/point_cloud.h>
+#include <pcl/common/transforms.h>
 
 // generates a random float from 0.0f (inclusive) to 1.0f (exclusive)
 float randf() {
@@ -32,6 +34,7 @@ template<typename T> void shuffle(std::vector<T> &vec) {
 CloudMap::CloudMap(pcl::PointCloud<pcl::PointXYZI> &cloud) {
 	this->cloud = cloud;
 	auto sz = this->cloud.size();
+	appliedTransforms = Eigen::Affine3f::Identity();
 
 	min_pt = pcl::PointXYZI();
 	max_pt = pcl::PointXYZI();
@@ -75,4 +78,42 @@ void CloudMap::draw() {
 		glVertex3f(p.x, p.y, p.z);
 		glEnd();
 	}
+}
+
+void CloudMap::transformMap(Eigen::Affine3f t) {
+	appliedTransforms = t * appliedTransforms;
+	transformPointCloud(cloud, cloud, t);
+}
+
+// TODO: unify
+glm::vec3 CloudMap::original(const glm::vec3& p) {
+	Eigen::Vector3f eigen_p(p.x, p.y, p.z);
+	Eigen::Vector3f result = appliedTransforms.inverse() * eigen_p;
+	return glm::vec3(result.x(), result.y(), result.z());
+}
+
+// TODO: unify
+glm::vec3 CloudMap::transform(const glm::vec3& p) {
+	Eigen::Vector3f eigen_p(p.x, p.y, p.z);
+	Eigen::Vector3f result = appliedTransforms * eigen_p;
+	return glm::vec3(result.x(), result.y(), result.z());
+}
+
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/euler_angles.hpp>
+
+// Eigen rotation -> glm::quat (Eigen::Quaternionf stores x,y,z,w; glm::quat ctor takes w,x,y,z)
+static glm::quat Vis_QuatFromEigen(const Eigen::Matrix3f& RE) {
+	const Eigen::Quaternionf e(RE);
+	return glm::normalize(glm::quat(e.w(), e.x(), e.y(), e.z()));
+}
+
+glm::quat CloudMap::original(const glm::quat& q) {
+	const glm::quat Ri = Vis_QuatFromEigen(appliedTransforms.inverse().rotation());
+	return glm::normalize(Ri * q);
+}
+
+glm::quat CloudMap::transform(const glm::quat& q) {
+	const glm::quat R = Vis_QuatFromEigen(appliedTransforms.rotation());
+	return glm::normalize(R * q);
 }

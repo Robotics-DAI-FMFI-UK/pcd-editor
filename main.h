@@ -1,20 +1,35 @@
 #include "vis/world.h"
+#include "vis/algo.h"
 
+#include <ranges>
 #include <pcl/io/pcd_io.h>
 #include <pcl/pcl_base.h>
 #include "nfd.h"
 
+#define UUID_TIME_GENERATOR
+#include "external/stduuid/include/uuid.h"
+
+
+#define SIZE(x) (sizeof(x)/sizeof((x)[0]))
 
 #define VIS_ZONE_Y_SCALE_SPEED             4.0f
 #define VIS_ZONE_XZ_SCALE_SPEED            1.0f
 #define VIS_ZONE_MAX_SIZE                  1000.0f
+
+
+// filtered because with the way the logic is set up, selected zones remain in the `zones` container
+// but are delegated to be handled separately (shouldn't be considered when iterating).
+// all loop functions are encouraged to use this instead of iterating the `zones` vector directly
+// to prevent unwanted behavior with ""invisible"" zones
+#define ZONES views::filter(zones, [&](Vis_Zone &z) {for (auto s : selected) { if (s.applyTo == &z) return 0; } return 1;})
+
 
 template<typename T>
 struct ModifiedSelection {
 	static_assert(std::is_trivially_copyable_v<T>,
 		"ModifiedSelection does a raw memcpy, so T must be trivially copyable");
 	
-	T mod{};
+	T mod;
 	T* applyTo = nullptr;
 
 	ModifiedSelection() = default;
@@ -28,7 +43,7 @@ struct ModifiedSelection {
 		std::memcpy(applyTo, &mod, sizeof(T));
 	}
 
-	bool empty() {
+	bool empty() const {
 		return applyTo == nullptr;
 	}
 
@@ -39,44 +54,36 @@ struct ModifiedSelection {
 	const T& operator*() const { return mod; }
 };
 
-struct Vis_Cuboid; // forward declaration
-struct Vis_Zone {
-	glm::vec3 center;
-	glm::vec3 halfExtents;
-	Vis_Orientation rot;
+struct Vis_BoundTransformable {
+	glm::vec3 getCenterPos() const;
+	void setCenterPos(glm::vec3 pos);
 
-	Vis_Zone() : center(0), halfExtents(0), rot(0, 0, 0) {};
-	Vis_Zone(glm::vec3 center, glm::vec3 halfExtents) : center(center), halfExtents(halfExtents), rot(0, 0, 0) {};
-	Vis_Zone(glm::vec3 center, glm::vec3 halfExtents, Vis_Orientation rot) : center(center), halfExtents(halfExtents), rot(rot) {};
+	glm::vec3 getSize() const;
+	void setSize(glm::vec3 size);
 
-	Vis_Cuboid toCuboid();
-	static Vis_Cuboid toCuboid(const Vis_Zone& zone);
+	Vis_Orientation getRotation() const;
+	void setRotation(Vis_Orientation rot);
 };
 
-struct Vis_Cuboid {
-	glm::vec3 p0;
-	glm::vec3 p1;
-	Vis_Orientation rot;
 
-	Vis_Cuboid() : p0(0), p1(0), rot(0, 0, 0) {};
-	Vis_Cuboid(glm::vec3 p0, glm::vec3 p1) : p0(p0), p1(p1), rot(0, 0, 0) {};
-	Vis_Cuboid(glm::vec3 p0, glm::vec3 p1, Vis_Orientation rot) : p0(p0), p1(p1), rot(rot) {};
+void Vis_UUID(char* out);
 
-	Vis_Zone toZone();
-	static Vis_Zone toZone(const Vis_Cuboid& cub);
+struct Vis_Zone : public Vis_CuboidCenter, public Vis_BoundTransformable {
+	Vis_Zone() : color(0.75f, 0.0f, 0.0f) {
+		label[0] = 0;
+		Vis_UUID(id);
+	};
+	Vis_Zone(Vis_CuboidCenter o) : Vis_CuboidCenter(o), color(0.75f, 0.0f, 0.0f) {
+		label[0] = 0;
+		Vis_UUID(id);
+	};
+
+	char label[50];
+	char id[37];
+	glm::vec3 color;
 };
 
-glm::mat4 Vis_Zone_GetTransform(const Vis_Zone& zone);
-
-glm::vec3 Vis_Zone_LocalToWorld(const Vis_Zone& zone, const glm::vec3& local);
-
-glm::vec3 Vis_Zone_WorldToLocal(const Vis_Zone& zone, const glm::vec3& world);
-
-void Vis_DrawZone(const Vis_Zone& zone);
-
-void Vis_Zone_ApplyDrag(Vis_Zone& zone, const glm::vec3& localAttach, const glm::vec3& target);
-
-void Vis_Zone_ApplyXZScale(Vis_Zone& zone, const glm::vec3& localAttach, const glm::vec3& target, const glm::vec3& initialBoxAttach);
+void Vis_DrawZone(const Vis_CuboidCenter& zone);
 
 
 enum DrawState {

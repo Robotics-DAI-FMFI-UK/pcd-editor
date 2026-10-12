@@ -39,12 +39,12 @@ app: $(OBJ)
 
 define compile_cxx_o
 	@mkdir -p $(dir $@)
-	$(CXX) -std=c++20 $(FLAGS) -c $< -o $@
+	$(CXX) -std=c++20 $(FLAGS) -MMD -MP -c $< -o $@
 endef
 
 define compile_c_o
 	@mkdir -p $(dir $@)
-	$(CC) -std=c11 $(FLAGS) -c $< -o $@
+	$(CC) -std=c11 $(FLAGS) -MMD -MP -c $< -o $@
 endef
 
 $(OBJDIR)/%.o: %.cpp

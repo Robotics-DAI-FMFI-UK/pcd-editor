@@ -55,14 +55,14 @@ void Vis_DrawGizmo(glm::vec3 pos) {
 	glEnd();
 }
 
-void Vis_DrawWireCube(const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& anglesDeg) {
-	glm::vec3 lo = glm::min(p0, p1);
-	glm::vec3 hi = glm::max(p0, p1);
-	glm::vec3 center = (lo + hi) * 0.5f;
-	glm::vec3 half = (hi - lo) * 0.5f;
+void Vis_DrawWireCube(const glm::vec3& p0, const glm::vec3& p1, const glm::quat& rot) {
+	const glm::vec3 lo = glm::min(p0, p1);
+	const glm::vec3 hi = glm::max(p0, p1);
+	const glm::vec3 center = (lo + hi) * 0.5f;
+	const glm::vec3 half = (hi - lo) * 0.5f;
 
-	// corners relative to center — rotation is applied about this local origin
-	glm::vec3 corners[8] = {
+	// corners relative to center, rotation is applied about this local origin
+	const glm::vec3 corners[8] = {
 		{ -half.x, -half.y, -half.z },{ half.x, -half.y, -half.z },
 		{ half.x,  half.y, -half.z },{ -half.x, half.y, -half.z },
 		{ -half.x, -half.y,  half.z },{ half.x, -half.y,  half.z },
@@ -76,12 +76,11 @@ void Vis_DrawWireCube(const glm::vec3& p0, const glm::vec3& p1, const glm::vec3&
 		{ 0,4 },{ 1,5 },{ 2,6 },{ 3,7 },
 	};
 
-	glPushMatrix();
-	glTranslatef(center.x, center.y, center.z);
-	glRotatef(anglesDeg.z, 0.0f, 0.0f, 1.0f);
-	glRotatef(anglesDeg.y, 0.0f, 1.0f, 0.0f);
-	glRotatef(anglesDeg.x, 1.0f, 0.0f, 0.0f);
+	const glm::mat4 TR = glm::translate(glm::mat4(1.0f), center) *
+		glm::mat4_cast(glm::normalize(rot));
 
+	glPushMatrix();
+	glMultMatrixf(glm::value_ptr(TR));
 
 	glBegin(GL_LINES);
 	for (int i = 0; i < 12; i++)
@@ -93,4 +92,12 @@ void Vis_DrawWireCube(const glm::vec3& p0, const glm::vec3& p1, const glm::vec3&
 	}
 	glEnd();
 	glPopMatrix();
+}
+
+// Legacy Euler entry point: forwards to the quaternion version
+void Vis_DrawWireCube(const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& anglesDeg) {
+	const glm::quat qx = glm::angleAxis(glm::radians(anglesDeg.x), glm::vec3(1.0f, 0.0f, 0.0f));
+	const glm::quat qy = glm::angleAxis(glm::radians(anglesDeg.y), glm::vec3(0.0f, 1.0f, 0.0f));
+	const glm::quat qz = glm::angleAxis(glm::radians(anglesDeg.z), glm::vec3(0.0f, 0.0f, 1.0f));
+	Vis_DrawWireCube(p0, p1, qz * qy * qx);
 }

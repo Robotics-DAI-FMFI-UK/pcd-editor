@@ -76,11 +76,11 @@ enum Vis_ProjectionMode {
 };
 
 union Vis_Orientation {
-	struct { float yaw, pitch, roll; };
+	struct { float pitch, yaw, roll; };
 	glm::vec3 vec3;
 
 	Vis_Orientation() : vec3(0.0f) {}
-	Vis_Orientation(float yaw, float pitch, float roll) : vec3(yaw, pitch, roll) {}
+	Vis_Orientation(float pitch, float yaw, float roll) : vec3(pitch, yaw, roll) {}
 	Vis_Orientation(const glm::vec3& v) : vec3(v) {}
 
 	Vis_Orientation operator+(const Vis_Orientation& o) const { return Vis_Orientation(vec3 + o.vec3); }
