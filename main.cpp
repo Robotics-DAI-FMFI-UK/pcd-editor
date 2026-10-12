@@ -2,6 +2,7 @@
 
 // native libs
 #include <cmath>
+#include <cstdio>
 #include <time.h>
 #include <iostream>
 
@@ -27,6 +28,7 @@ using namespace pcl;
 #define VIS_ZONE_Y_SCALE_SPEED             4.0f
 #define VIS_ZONE_XZ_SCALE_SPEED            1.0f
 #define VIS_ZONE_MAX_SIZE                  1000.0f
+#define VIS_PLACE_POSE_Z                    0.0f
 
 
 
@@ -133,9 +135,186 @@ DrawState drawState = UNINIT;
 Vis_Cuboid drawing_cuboid;            // (TODO: remove?) used as temporary container for new zone
 glm::vec3 initialRayAttach;
 glm::vec3 rayAttach;
+bool showGroundCoordinates = false;
+Eigen::Affine3f worldToPcd = Eigen::Affine3f::Identity();
+
+enum CoordinatePickState {
+   COORD_LIVE,
+   COORD_DRAGGING,
+   COORD_LOCKED
+};
+
+CoordinatePickState coordinatePickState = COORD_LIVE;
+glm::vec3 coordinateStartWorld(0.0f);
+glm::vec3 coordinateEndWorld(0.0f);
+Eigen::Vector3f coordinateStartMap = Eigen::Vector3f::Zero();
+Eigen::Vector3f coordinateEndMap = Eigen::Vector3f::Zero();
+Eigen::Vector3f coordinateCursorMap = Eigen::Vector3f::Zero();
+bool coordinateCursorValid = false;
+bool coordinateOrientationValid = false;
+float coordinateYaw = 0.0f;
+float coordinateQx = 1.0f;
+float coordinateQy = 0.0f;
+float coordinateQz = 0.0f;
+float coordinateQw = 0.0f;
+bool coordinatePoseCopied = false;
+char coordinatePoseLine[256] = "";
+
+bool Vis_GetMouseGroundPoint(glm::vec3& worldPoint, Eigen::Vector3f& mapPoint) {
+   glm::vec3 rayOrigin, rayDirection;
+   Vis_GetMouseRay(rayOrigin, rayDirection);
+   if (!Vis_RayPlaneIntersect(
+         rayOrigin, rayDirection, VIS_COORD_GROUND.origin,
+         VIS_COORD_GROUND.axis_y, worldPoint))
+      return false;
+
+   Eigen::Vector3f alignedPoint(worldPoint.x, worldPoint.y, worldPoint.z);
+   mapPoint = worldToPcd * alignedPoint;
+   return true;
+}
+
+void Vis_UpdateCoordinateOrientation() {
+   float dx = coordinateEndMap.x() - coordinateStartMap.x();
+   float dy = coordinateEndMap.y() - coordinateStartMap.y();
+   coordinateOrientationValid = dx * dx + dy * dy >= 0.0004f;
+   if (!coordinateOrientationValid)
+      return;
+
+   coordinateYaw = atan2f(dy, dx);
+
+   // places.txt stores the Unitree/map pose convention: planar yaw combined
+   // with the fixed 180-degree rotation about X between the robot/body frames.
+   // q_yaw(Z) * q_roll(X, pi) = (cos(yaw/2), sin(yaw/2), 0, 0).
+   coordinateQx = cosf(coordinateYaw * 0.5f);
+   coordinateQy = sinf(coordinateYaw * 0.5f);
+   coordinateQz = 0.0f;
+   coordinateQw = 0.0f;
+}
+
+void Vis_CopyCoordinatePose() {
+   std::snprintf(
+      coordinatePoseLine, sizeof(coordinatePoseLine),
+      "%.6f %.6f %.6f %.6f %.6f %.6f %.6f",
+      coordinateStartMap.x(), coordinateStartMap.y(), VIS_PLACE_POSE_Z,
+      coordinateQx, coordinateQy, coordinateQz, coordinateQw);
+
+   ImGui::SetClipboardText(coordinatePoseLine);
+   std::cout << "places.txt pose: " << coordinatePoseLine << std::endl;
+   coordinatePoseCopied = true;
+}
+
+void coordinateModeControls(bool updateSelection) {
+   ImGuiIO& io = ImGui::GetIO();
+
+   if (!updateSelection) {
+      if (!io.WantCaptureKeyboard && ImGui::IsKeyPressed(ImGuiKey_C, false)) {
+         showGroundCoordinates = !showGroundCoordinates;
+         coordinatePickState = COORD_LIVE;
+         coordinateCursorValid = false;
+         coordinateOrientationValid = false;
+         coordinatePoseCopied = false;
+         VIS_CAMERA_CONTROLS = !showGroundCoordinates;
+      }
+      return;
+   }
+
+   if (!showGroundCoordinates)
+      return;
+
+   // While a drag is active, always observe its release even if the cursor
+   // crosses an ImGui window. New selections never start through UI windows.
+   if (coordinatePickState != COORD_DRAGGING && io.WantCaptureMouse)
+      return;
+
+   if (coordinatePickState == COORD_LOCKED) {
+      if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+         coordinatePickState = COORD_LIVE;
+         coordinateCursorValid = false;
+         coordinateOrientationValid = false;
+         coordinatePoseCopied = false;
+      }
+      return;
+   }
+
+   glm::vec3 worldPoint;
+   Eigen::Vector3f mapPoint;
+   bool hasGroundPoint = Vis_GetMouseGroundPoint(worldPoint, mapPoint);
+
+   if (coordinatePickState == COORD_LIVE) {
+      coordinateCursorValid = hasGroundPoint;
+      if (hasGroundPoint)
+         coordinateCursorMap = mapPoint;
+
+      if (hasGroundPoint && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+         coordinateStartWorld = coordinateEndWorld = worldPoint;
+         coordinateStartMap = coordinateEndMap = mapPoint;
+         coordinateOrientationValid = false;
+         coordinatePoseCopied = false;
+         coordinatePickState = COORD_DRAGGING;
+      }
+      return;
+   }
+
+   if (hasGroundPoint) {
+      coordinateEndWorld = worldPoint;
+      coordinateEndMap = mapPoint;
+      Vis_UpdateCoordinateOrientation();
+   }
+
+   if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+      coordinatePickState = COORD_LOCKED;
+      if (coordinateOrientationValid)
+         Vis_CopyCoordinatePose();
+   }
+}
+
+void Vis_DrawCoordinateSelection() {
+   if (!showGroundCoordinates || coordinatePickState == COORD_LIVE)
+      return;
+
+   glm::vec3 up = glm::normalize(VIS_COORD_GROUND.axis_y);
+   glm::vec3 axisX = glm::normalize(VIS_COORD_GROUND.axis_x);
+   glm::vec3 axisZ = glm::normalize(VIS_COORD_GROUND.axis_z);
+   glm::vec3 start = coordinateStartWorld + up * 0.03f;
+   const float markerSize = 0.12f;
+
+   glDisable(GL_DEPTH_TEST);
+   glLineWidth(3.0f);
+   glColor3f(1.0f, 0.65f, 0.0f);
+   glBegin(GL_LINES);
+   glVertex3fv(glm::value_ptr(start - axisX * markerSize));
+   glVertex3fv(glm::value_ptr(start + axisX * markerSize));
+   glVertex3fv(glm::value_ptr(start - axisZ * markerSize));
+   glVertex3fv(glm::value_ptr(start + axisZ * markerSize));
+
+   if (coordinateOrientationValid) {
+      glm::vec3 end = coordinateEndWorld + up * 0.03f;
+      glm::vec3 direction = glm::normalize(end - start);
+      glm::vec3 side = glm::normalize(glm::cross(up, direction));
+      float arrowLength = glm::length(end - start);
+      float headLength = std::min(0.30f, arrowLength * 0.30f);
+      float headWidth = headLength * 0.55f;
+      glm::vec3 headBase = end - direction * headLength;
+
+      glVertex3fv(glm::value_ptr(start));
+      glVertex3fv(glm::value_ptr(end));
+      glVertex3fv(glm::value_ptr(end));
+      glVertex3fv(glm::value_ptr(headBase + side * headWidth));
+      glVertex3fv(glm::value_ptr(end));
+      glVertex3fv(glm::value_ptr(headBase - side * headWidth));
+   }
+   glEnd();
+   glLineWidth(1.0f);
+   glEnable(GL_DEPTH_TEST);
+}
 
 void controls() {
    ImGuiIO& io = ImGui::GetIO();
+
+   if (showGroundCoordinates) {
+      VIS_CAMERA_CONTROLS = false;
+      return;
+   }
 
    VIS_CAMERA_CONTROLS = true;
    if (io.WantCaptureMouse)
@@ -261,6 +440,59 @@ void makeui() {
    if (ImGui::Button("Reset View"))
       Vis_Camera_Reset();
    ImGui::End();
+
+   if (showGroundCoordinates) {
+      ImGui::SetNextWindowPos(ImVec2(17, 230), ImGuiCond_Once);
+      ImGui::SetNextWindowBgAlpha(0.75f);
+      constexpr ImGuiWindowFlags overlayFlags =
+         ImGuiWindowFlags_AlwaysAutoResize |
+         ImGuiWindowFlags_NoDecoration |
+         ImGuiWindowFlags_NoInputs |
+         ImGuiWindowFlags_NoNav;
+      ImGui::Begin("Ground coordinates", nullptr, overlayFlags);
+
+      if (coordinatePickState == COORD_LIVE) {
+         ImGui::TextUnformatted("Map cursor [C]");
+         if (coordinateCursorValid) {
+            ImGui::Text("X: %.3f", coordinateCursorMap.x());
+            ImGui::Text("Y: %.3f", coordinateCursorMap.y());
+            ImGui::TextUnformatted("Drag left mouse to set heading");
+         }
+         else {
+            ImGui::TextUnformatted("X: --");
+            ImGui::TextUnformatted("Y: --");
+            ImGui::TextUnformatted("Ground is not under cursor");
+         }
+      }
+      else {
+         ImGui::TextUnformatted(
+            coordinatePickState == COORD_DRAGGING
+               ? "Selected pose (drag heading)"
+               : "Selected pose");
+         ImGui::Text("X: %.3f", coordinateStartMap.x());
+         ImGui::Text("Y: %.3f", coordinateStartMap.y());
+         ImGui::Text("Z: %.3f (pose origin)", VIS_PLACE_POSE_Z);
+
+         if (coordinateOrientationValid) {
+            ImGui::Text("Yaw: %.1f deg", RAD2DEG(coordinateYaw));
+            ImGui::Separator();
+            ImGui::TextUnformatted("Quaternion (q_x q_y q_z q_w)");
+            ImGui::Text("%.6f  %.6f  %.6f  %.6f",
+               coordinateQx, coordinateQy, coordinateQz, coordinateQw);
+         }
+         else {
+            ImGui::TextUnformatted("Heading: drag farther to specify");
+         }
+
+         if (coordinatePickState == COORD_LOCKED) {
+            if (coordinatePoseCopied)
+               ImGui::TextUnformatted("Pose copied to clipboard");
+            ImGui::TextUnformatted("Click to inspect another point");
+         }
+      }
+
+      ImGui::End();
+   }
    
    
    ImGui::Begin("Map");
@@ -305,8 +537,10 @@ PointCloud<PointXYZI> pointCloud;
 void mainloop() {
    Vis_FrameStart();
 
+   coordinateModeControls(false);
    Vis_UpdateInput();
    Vis_UpdateWorld();
+   coordinateModeControls(true);
 
    Vis_LoadCoord(VIS_COORD_GROUND);
    Vis_DrawGrid();
@@ -326,7 +560,7 @@ void mainloop() {
    // DRAW EXISTING ZONES
    glColor3f(0.75f, 0.0f, 0.0f);
    for (Vis_Zone& zone : zones) {
-      if (selectionState != UNINIT && selection.applyTo == &zone)
+      if (selectionState != EMPTY && selection.applyTo == &zone)
          continue;
       Vis_DrawZone(zone);
    }
@@ -342,6 +576,9 @@ void mainloop() {
          glColor3f(1.0f, 0.85f, 0.0f);
       Vis_DrawZone(selection.mod);
    }
+
+   // Draw last so the selected pose remains visible over the map and zones.
+   Vis_DrawCoordinateSelection();
 
    /* ---------------------------- end scene drawing --------------------------- */
 
@@ -401,7 +638,12 @@ int main() {
    }
 
    fromPCLPointCloud2(pcdData, pointCloud);
-   Vis_AlignFloorToGround(pointCloud);
+
+   Eigen::Affine3f pcdToWorld = Eigen::Affine3f::Identity();
+   if (Vis_FloorToGroundAlignment(pointCloud, pcdToWorld)) {
+      transformPointCloud(pointCloud, pointCloud, pcdToWorld);
+      worldToPcd = pcdToWorld.inverse();
+   }
 
    cmap = new CloudMap(pointCloud);
 
